@@ -1,186 +1,20 @@
-#include <Wire.h>
-#include “SparkFun_BQ769x0.h”
-/* BMS V1
-* See README.md for more information on contents of V1. 
+/** BMS V2. Cell Balancing
+* See README.md for more information on contents of V2. 
 */
-int bqI2CAddress = 0x08; // 7-bit I2C address
-//This code is written for the bq76940. The bq76940 supports 9 to 15 cells.
-#define NUM_CELLS 12 // bq76940 9 to 15 cells.
-//Max number of ms before timeout error. 100 is pretty good
-#define MAX_I2C_TIME 100 // Max number of ms before timeout error.
-//two internal factory set up values
-float gain = 0; //These are two internal factory set values.
-int offset = 0; //We read them once at boot up and use them in many functions
-long lastTime[2]; //used to blink the status LED
-long totalCoulombCount = 0; //overall pack fuel gauge tracking
-float cellVoltage[NUM_CELLS +1]; // keeps track of the cell voltages data_
 
-boolean enableLoadOutput = false; //Will set DSG FET to conduct if load present
+//INSERT CODE HERE
 
-//GPIO declarations
-//-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-byte irqPin = 2; //Interrupt enabled, connected to bq pin ALERT
-byte statLED = 13; //Ob board status LED
-//-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-
-
-void setup() //Runs once on startup
+void setup()
 {
-	Serial.begin(9600); //Allows us to print text from Arduino
-	Serial.println(“PEV BMS Version 1”);
-	Wire.begin();
-  pinMode(statLED, OUTPUT);
-  digitalWrite(statLED, LOW); //Turn off the LED for now
-
-  if(initBQ(2) == false) //Call init with pin 2 (IRQ0) or 3 (IRQ1)
-  {
-    Serial.println("bq76940 failed to respond - check your wiring");
-    Serial.println("Hanging.");
-    while(1);
-  }
-  else
-  {
-    Serial.println("bq76940 initialized!");
-  }
-
-  lastTime[0] = millis(); //Charger/load detection
-  lastTime[1] = millis(); //Cell voltage readings
-
-  enableLoadOutput = false; //Deactivated
+  //Runs once on startup
 }
 
-void loop() //never stops running
+void loop()
 {
-  //Check for charger/load presence.
-  if(millis() - lastTime[0] > 1000 && enableLoadOutput)
-	{
-    byte sysCtrl1 = registerRead(bq796x0_SYS_CTRL1); //holds LOAD_PRESENT
-    byte sysCtrl2 = registerRead(bq796x0_SYS_CTRL2); //holds CHG,DSG
-    //LOAD_PRESENT valid only when CHG_ON=0.
-    //HIGH when CHG > VLOAD_DETECT
-    //LOW when CHG < VLOAD_DETECT or CHG_ON=1
-    //VLOAD_DETECT=0.7V (typ.)
-    //CHG, DSG are Outputs
-    if(!(sysCtrl2 & bq796x0_CHG_ON)) //Valid only if CHG disabled
-    {
-      if(sysCtrl1 & bq796x0_LOAD_PRESENT)//Load present
-      {
-        //enable DSG
-        registerWrite(bq796x0_SYS_CTRL2, sysCtrl2 | bq796x0_DSG_ON);
-      }
-      else
-      {
-        //disable DSG
-        registerWrite(bq796x0_SYS_CTRL2, sysCtrl & 11111110);
-      }
-    }
-    lastTime[0] = millis();
-
-  }
-
-  //Each second make a reading of cell voltages
-  //And blink the status LED
-  if(millis() - lastTime[1] > 1000)
-  {
-    for(int i = 0 ; i < NUMBER_OF_CELLS ; i++)
-      cellVoltage[i] = readCellVoltage(i);
-
-    //Toggle stat LED
-    if(digitalRead(statLED) == HIGH)
-      digitalWrite(statLED, LOW);
-    else
-    {
-      digitalWrite(statLED, HIGH);
-      displayVoltages();
-    }
-
-    int temp = readTemp(0);
-    Serial.print("Die temp = ");
-    Serial.println(temp);
-
-    float packV = readPackVoltage();
-    Serial.print("PackV = ");
-    Serial.println(packV);
-
-    //Calc the pack voltage by hand?
-    float totalVoltage = 0;
-    for(int i = 0 ; i < NUMBER_OF_CELLS ; i++)
-      totalVoltage += cellVoltage[i];
-    Serial.print("PackV manual = ");
-    Serial.println(totalVoltage);
-
-    lastTime[1] = millis();
-  }
-
-  //For every IRQ event read the flags and update the coulomb counter and other major events
-  if(bq769x0_IRQ_Triggered == true)
-  {
-    //Read the status register and update if needed
-    byte sysStat = registerRead(bq796x0_SYS_STAT);
-
-    Serial.print("sysStat: 0x");
-    Serial.println(sysStat, HEX);
-
-    //Double check that ADC is enabled
-    //byte sysVal = registerRead(bq796x0_SYS_CTRL1);
-    //if(sysVal & bq796x0_ADC_EN)
-    //{
-    //  Serial.println("ADC Enabled");
-    //}
-
-    //We need to write 1s into all the places we want a zero, but not overwrite the 1s we want left alone
-    byte sysNew = 0;
-
-    //Check for couloumb counter read
-    if(sysStat & bq796x0_CC_READY)
-    {
-      Serial.println("CC Ready");
-      totalCoulombCount += readCoulombCounter(); //Add this 250ms reading to the global fuel gauge
-      sysNew |= bq796x0_CC_READY; //Clear this status bit by writing a one into this spot
-    }
-
-    if(sysStat & bq796x0_DEVICE_XREADY) //Internal fault
-    {
-      Serial.println("Internal fault");
-      sysNew |= bq796x0_DEVICE_XREADY; //Clear this status bit by writing a one into this spot
-    }
-
-    if(sysStat & bq796x0_OVRD_ALERT) //Alert pin is being pulled high externally?
-    {
-      Serial.println("Override alert");
-      sysNew |= bq796x0_OVRD_ALERT; //Clear this status bit by writing a one into this spot
-    }
-
-    if(sysStat & bq796x0_UV) //Under voltage
-    {
-      Serial.println("Under voltage alert!");
-      sysNew |= bq796x0_UV; //Clear this status bit by writing a one into this spot
-    }
-
-    if(sysStat & bq796x0_OV) //Over voltage
-    {
-      Serial.println("Over voltage alert!");
-      sysNew |= bq796x0_OV; //Clear this status bit by writing a one into this spot
-    }
-
-    if(sysStat & bq796x0_SCD) //Short circuit detect
-    {
-      Serial.println("Short Circuit alert!");
-      //sysNew |= bq796x0_SCD; //Clear this status bit by writing a one into this spot
-    }
-
-    if(sysStat & bq796x0_OCD) //Over current detect
-    {
-      Serial.println("Over current alert!");
-      //sysNew |= bq796x0_OCD; //Clear this status bit by writing a one into this spot
-    }
-
-    //Update the SYS_STAT with only the ones we want, only these bits will clear to zero
-    registerWrite(bq796x0_SYS_STAT, sysNew); //address, value
-
-    bq769x0_IRQ_Triggered = false; //Reset flag
-  }
+  //Runs forever
 }
+
+
 
 /***********************************************/
 /************** Available functions ************/
